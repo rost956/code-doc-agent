@@ -14,6 +14,7 @@ def main() -> None:
     parser.add_argument("--index", default=None, help="Path to code index JSON. Overrides AGENT_INDEX_PATH")
     parser.add_argument("--log", default=None, help="Path to agent JSONL log. Overrides AGENT_LOG_PATH")
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent tool-calling steps")
+    parser.add_argument("--prompt", default=None, help="Path to system prompt text file")
     args = parser.parse_args()
 
     config = load_config(args.env)
@@ -21,6 +22,7 @@ def main() -> None:
     index_path = args.index or config.agent.index_path
     log_path = args.log or config.agent.log_path
     max_steps = args.max_steps or config.agent.max_steps
+    system_prompt_path = args.prompt or config.agent.system_prompt_path
 
     client = OpenAICompatibleClient(config.llm)
     agent = CodeResearchAgent(
@@ -28,6 +30,7 @@ def main() -> None:
         llm_client=client,
         log_path=log_path,
         max_steps=max_steps,
+        system_prompt_path=system_prompt_path,
     )
 
     answer = agent.answer(args.question)

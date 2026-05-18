@@ -9,7 +9,8 @@ venv/
 env/
 
 # Logs and generated data
-logs/*.jsonl
+logs/
+data/conversations/
 code_index.json
 
 # Secrets

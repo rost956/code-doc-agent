@@ -22,12 +22,19 @@ class AgentConfig:
     index_path: str = "code_index.json"
     log_path: str = "logs/agent_steps.jsonl"
     max_steps: int = 8
+    system_prompt_path: str = "prompts/system_prompt.txt"
+
+
+@dataclass(frozen=True)
+class WebConfig:
+    conversation_dir: str = "data/conversations"
 
 
 @dataclass(frozen=True)
 class AppConfig:
     llm: LLMConfig
     agent: AgentConfig
+    web: WebConfig
 
 
 def load_config(env_path: str | Path = ".env") -> AppConfig:
@@ -67,8 +74,19 @@ def load_config(env_path: str | Path = ".env") -> AppConfig:
             index_path=os.getenv("AGENT_INDEX_PATH", "code_index.json"),
             log_path=os.getenv("AGENT_LOG_PATH", "logs/agent_steps.jsonl"),
             max_steps=_get_int("AGENT_MAX_STEPS", 8),
+            system_prompt_path=os.getenv("AGENT_SYSTEM_PROMPT_PATH", "prompts/system_prompt.txt"),
+        ),
+        web=WebConfig(
+            conversation_dir=os.getenv("WEB_CONVERSATION_DIR", "data/conversations"),
         ),
     )
+
+
+def load_text_file(path: str | Path) -> str:
+    file_path = Path(path)
+    if not file_path.exists():
+        raise RuntimeError(f"Файл не найден: {file_path}")
+    return file_path.read_text(encoding="utf-8").strip()
 
 
 def _get_int(name: str, default: int) -> int:

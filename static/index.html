@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Code ReAct Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">CA</div>
+        <div>
+          <h1>Code Agent</h1>
+        </div>
+      </div>
+      <button id="newChatBtn" class="primary full">Новый диалог</button>
+      <div class="side-title">История</div>
+      <div id="conversationList" class="conversation-list"></div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <div>
+          <h2 id="chatTitle">Новый диалог</h2>
+        </div>
+      </header>
+
+      <section id="messages" class="messages"></section>
+
+      <section id="steps" class="steps hidden">
+        <div class="steps-header">Ход работы агента</div>
+        <div id="stepsBody"></div>
+      </section>
+
+      <form id="chatForm" class="composer">
+        <textarea id="messageInput" rows="3" placeholder="Например: Составь план ответа по проверке доступа пользователя"></textarea>
+        <div class="composer-actions">
+          <button type="button" id="planBtn">Попросить план</button>
+          <button type="button" id="jsonBtn">JSON по схеме</button>
+          <button type="submit" id="sendBtn" class="primary">Отправить</button>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

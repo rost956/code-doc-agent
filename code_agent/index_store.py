@@ -84,7 +84,9 @@ class CodeIndex:
         return result
 
     def _read_symbol_body(self, symbol: dict[str, Any]) -> str:
-        file_path = self.project_root / symbol["file_path"]
+        file_path = self._resolve_symbol_file(symbol)
+        if not file_path:
+            return ""
 
         try:
             lines = file_path.read_text(encoding="utf-8").splitlines()
@@ -96,6 +98,21 @@ class CodeIndex:
         start = max(symbol["line_start"] - 1, 0)
         end = symbol["line_end"]
         return "\n".join(lines[start:end])
+
+    def _resolve_symbol_file(self, symbol: dict[str, Any]) -> Path | None:
+        """Resolve symbol file path even if the project folder was moved."""
+        relative_path = Path(symbol["file_path"])
+        candidates = [
+            self.project_root / relative_path,
+            self.index_path.parent / relative_path,
+            self.index_path.parent / self.project_root.name / relative_path,
+        ]
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        return None
 
     def _tokens(self, text: str) -> list[str]:
         return [token.lower() for token in re.findall(r"[a-zA-Zа-яА-Я0-9_]+", text)]
