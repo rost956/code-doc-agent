@@ -24,7 +24,12 @@ class OpenAICompatibleClient:
 
         self.client = OpenAI(**client_kwargs)
 
-    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> Any:
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any = "auto",
+    ) -> Any:
         kwargs: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -36,6 +41,6 @@ class OpenAICompatibleClient:
 
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice
 
         return self.client.chat.completions.create(**kwargs)

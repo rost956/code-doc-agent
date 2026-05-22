@@ -1,6 +1,7 @@
 const state = {
   conversationId: localStorage.getItem('conversationId') || null,
   isStreaming: false,
+  repository: null,
 };
 
 const messagesEl = document.getElementById('messages');
@@ -14,6 +15,17 @@ const jsonBtn = document.getElementById('jsonBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 const conversationListEl = document.getElementById('conversationList');
 const chatTitleEl = document.getElementById('chatTitle');
+const repoStatusEl = document.getElementById('repoStatus');
+const repoUrlInput = document.getElementById('repoUrlInput');
+const repoBranchInput = document.getElementById('repoBranchInput');
+const repoTokenInput = document.getElementById('repoTokenInput');
+const connectRepoBtn = document.getElementById('connectRepoBtn');
+const disconnectRepoBtn = document.getElementById('disconnectRepoBtn');
+const projectNameInput = document.getElementById('projectNameInput');
+const projectArchiveInput = document.getElementById('projectArchiveInput');
+const projectFolderInput = document.getElementById('projectFolderInput');
+const uploadArchiveBtn = document.getElementById('uploadArchiveBtn');
+const uploadFolderBtn = document.getElementById('uploadFolderBtn');
 
 init();
 
@@ -28,6 +40,22 @@ async function init() {
 
 newChatBtn.addEventListener('click', async () => {
   await createConversation();
+});
+
+connectRepoBtn.addEventListener('click', async () => {
+  await connectRepository();
+});
+
+disconnectRepoBtn.addEventListener('click', async () => {
+  await disconnectRepository();
+});
+
+uploadArchiveBtn.addEventListener('click', async () => {
+  await uploadProjectArchive();
+});
+
+uploadFolderBtn.addEventListener('click', async () => {
+  await uploadProjectFolder();
 });
 
 planBtn.addEventListener('click', () => {
@@ -68,7 +96,8 @@ async function loadConversations() {
 
     const openBtn = document.createElement('button');
     openBtn.className = 'conversation-item';
-    openBtn.innerHTML = `${escapeHtml(item.title || 'Без названия')}<small>${item.message_count || 0} сообщений</small>`;
+    const projectLabel = item.repository ? `<small>project: ${escapeHtml(projectDisplayName(item.repository))}</small>` : '';
+    openBtn.innerHTML = `${escapeHtml(item.title || 'Без названия')}<small>${item.message_count || 0} сообщений</small>${projectLabel}`;
     openBtn.addEventListener('click', () => loadConversation(item.id));
 
     const deleteBtn = document.createElement('button');
@@ -103,12 +132,10 @@ async function loadConversation(conversationId) {
 async function deleteConversation(conversationId) {
   if (state.isStreaming) return;
 
-  const accepted = confirm('Удалить этот диалог?');
+  const accepted = confirm('Удалить этот диалог? Локальные файлы проекта и индекс тоже будут удалены.');
   if (!accepted) return;
 
-  const response = await fetch(`/api/conversations/${conversationId}`, {
-    method: 'DELETE',
-  });
+  const response = await fetch(`/api/conversations/${conversationId}`, { method: 'DELETE' });
 
   if (!response.ok) {
     alert('Не удалось удалить диалог');
@@ -116,7 +143,6 @@ async function deleteConversation(conversationId) {
   }
 
   const wasActive = conversationId === state.conversationId;
-
   const listResponse = await fetch('/api/conversations');
   const conversations = await listResponse.json();
 
@@ -140,17 +166,167 @@ function renderConversation(conversation) {
   stepsBodyEl.innerHTML = '';
   stepsEl.classList.add('hidden');
   chatTitleEl.textContent = conversation.title || 'Новый диалог';
+  state.repository = conversation.repository || null;
+  renderRepositoryStatus();
+
   for (const message of conversation.messages || []) {
     addMessage(message.role, message.content);
   }
   scrollMessages();
 }
 
+function renderRepositoryStatus() {
+  if (!state.repository) {
+    repoStatusEl.textContent = 'Проект не подключён';
+    repoStatusEl.classList.remove('connected');
+    repoUrlInput.value = '';
+    repoBranchInput.value = '';
+    repoTokenInput.value = '';
+    disconnectRepoBtn.disabled = true;
+    return;
+  }
+
+  repoStatusEl.textContent = `${projectDisplayName(state.repository)} · ${state.repository.symbol_count || 0} символов`;
+  repoStatusEl.classList.add('connected');
+  repoUrlInput.value = state.repository.provider === 'github' ? (state.repository.url || '') : '';
+  repoBranchInput.value = state.repository.provider === 'github' ? (state.repository.branch || '') : '';
+  repoTokenInput.value = '';
+  disconnectRepoBtn.disabled = false;
+}
+
+async function connectRepository() {
+  if (state.isStreaming || !state.conversationId) return;
+
+  const url = repoUrlInput.value.trim();
+  const branch = repoBranchInput.value.trim();
+  const token = repoTokenInput.value.trim();
+
+  if (!url) {
+    alert('Укажи ссылку на GitHub-репозиторий');
+    return;
+  }
+
+  setBusy(true);
+  addMessage('assistant', 'Подключаю репозиторий, клонирую код и строю индекс...');
+
+  try {
+    const response = await fetch(`/api/conversations/${state.conversationId}/repository`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, branch: branch || null, token: token || null }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+
+    state.repository = data.repository;
+    renderRepositoryStatus();
+    repoTokenInput.value = '';
+    await loadConversation(state.conversationId);
+  } catch (error) {
+    addMessage('assistant', `Ошибка подключения репозитория: ${error.message}`);
+  } finally {
+    setBusy(false);
+    await loadConversations();
+  }
+}
+
+async function uploadProjectArchive() {
+  if (state.isStreaming || !state.conversationId) return;
+
+  const file = projectArchiveInput.files && projectArchiveInput.files[0];
+  if (!file) {
+    alert('Выбери ZIP-архив проекта');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('project_name', projectNameInput.value.trim() || file.name);
+
+  setBusy(true);
+  addMessage('assistant', 'Загружаю ZIP-архив проекта и строю индекс...');
+
+  try {
+    const response = await fetch(`/api/conversations/${state.conversationId}/project/archive`, {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+
+    state.repository = data.repository;
+    renderRepositoryStatus();
+    projectArchiveInput.value = '';
+    await loadConversation(state.conversationId);
+  } catch (error) {
+    addMessage('assistant', `Ошибка загрузки ZIP: ${error.message}`);
+  } finally {
+    setBusy(false);
+    await loadConversations();
+  }
+}
+
+async function uploadProjectFolder() {
+  if (state.isStreaming || !state.conversationId) return;
+
+  const files = Array.from(projectFolderInput.files || []);
+  if (files.length === 0) {
+    alert('Выбери папку проекта');
+    return;
+  }
+
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file, file.webkitRelativePath || file.name);
+  }
+  formData.append('project_name', projectNameInput.value.trim() || guessFolderName(files));
+
+  setBusy(true);
+  addMessage('assistant', `Загружаю папку проекта (${files.length} файлов) и строю индекс...`);
+
+  try {
+    const response = await fetch(`/api/conversations/${state.conversationId}/project/folder`, {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+
+    state.repository = data.repository;
+    renderRepositoryStatus();
+    projectFolderInput.value = '';
+    await loadConversation(state.conversationId);
+  } catch (error) {
+    addMessage('assistant', `Ошибка загрузки папки: ${error.message}`);
+  } finally {
+    setBusy(false);
+    await loadConversations();
+  }
+}
+
+async function disconnectRepository() {
+  if (state.isStreaming || !state.conversationId || !state.repository) return;
+  const accepted = confirm('Отключить проект от текущего диалога? Индекс и локальная копия будут удалены.');
+  if (!accepted) return;
+
+  setBusy(true);
+  try {
+    const response = await fetch(`/api/conversations/${state.conversationId}/repository`, { method: 'DELETE' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    state.repository = null;
+    renderRepositoryStatus();
+    addMessage('assistant', 'Проект отключён. Диалог снова использует стандартный индекс из .env.');
+  } catch (error) {
+    addMessage('assistant', `Ошибка отключения проекта: ${error.message}`);
+  } finally {
+    setBusy(false);
+    await loadConversations();
+  }
+}
+
 async function sendMessage(message) {
-  state.isStreaming = true;
-  sendBtn.disabled = true;
-  planBtn.disabled = true;
-  jsonBtn.disabled = true;
+  setBusy(true);
 
   addMessage('user', message);
   const assistantMessage = addMessage('assistant', '');
@@ -202,20 +378,13 @@ async function sendMessage(message) {
   } catch (error) {
     assistantMessage.textContent = `Ошибка запроса: ${error.message}`;
   } finally {
-    state.isStreaming = false;
-    sendBtn.disabled = false;
-    planBtn.disabled = false;
-    jsonBtn.disabled = false;
+    setBusy(false);
     await loadConversations();
   }
 }
 
-
 async function generateStructuredJson() {
-  state.isStreaming = true;
-  sendBtn.disabled = true;
-  planBtn.disabled = true;
-  jsonBtn.disabled = true;
+  setBusy(true);
 
   const assistantMessage = addMessage('assistant', 'Формирую JSON по схеме и проверяю структуру...');
 
@@ -237,12 +406,20 @@ async function generateStructuredJson() {
   } catch (error) {
     assistantMessage.textContent = `Ошибка генерации JSON: ${error.message}`;
   } finally {
-    state.isStreaming = false;
-    sendBtn.disabled = false;
-    planBtn.disabled = false;
-    jsonBtn.disabled = false;
+    setBusy(false);
     await loadConversations();
   }
+}
+
+function setBusy(value) {
+  state.isStreaming = value;
+  sendBtn.disabled = value;
+  planBtn.disabled = value;
+  jsonBtn.disabled = value;
+  connectRepoBtn.disabled = value;
+  uploadArchiveBtn.disabled = value;
+  uploadFolderBtn.disabled = value;
+  disconnectRepoBtn.disabled = value || !state.repository;
 }
 
 async function readEventStream(stream, onEvent) {
@@ -296,6 +473,19 @@ function addStep(text) {
 
 function scrollMessages() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function projectDisplayName(project) {
+  if (!project) return '';
+  if (project.provider === 'github') return `${project.owner}/${project.repo}`;
+  if (project.provider === 'upload') return project.name || 'uploaded-project';
+  return project.name || project.url || 'project';
+}
+
+function guessFolderName(files) {
+  const first = files[0];
+  const relative = first.webkitRelativePath || first.name;
+  return relative.split('/')[0] || 'uploaded-folder';
 }
 
 function escapeHtml(value) {

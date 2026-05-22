@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from code_agent.llm_client import OpenAICompatibleClient
 from code_agent.logger import JsonlLogger
 from code_agent.schemas import MethodDocumentation
+from code_agent.index_store import CodeIndex
 
 
 JSON_SYSTEM_PROMPT = """
@@ -34,10 +35,12 @@ class JsonDocumentationGenerator:
         llm_client: OpenAICompatibleClient,
         log_path: str = "logs/agent_steps.jsonl",
         max_repair_attempts: int = 2,
+        index_path: str | None = None,
     ):
         self.llm_client = llm_client
         self.logger = JsonlLogger(log_path)
         self.max_repair_attempts = max_repair_attempts
+        self.index_path = index_path
 
     def generate_from_messages(
         self,
@@ -94,6 +97,7 @@ class JsonDocumentationGenerator:
 
             try:
                 data = self._parse_json(raw)
+                data = self._enrich_with_index_if_needed(data, tool_facts)
                 data = self._enrich_with_tool_facts(data, tool_facts)
                 validated = MethodDocumentation.model_validate(data)
                 parsed = validated.model_dump()
@@ -433,6 +437,106 @@ class JsonDocumentationGenerator:
         class_properties = tool_facts.get("class_properties", {}) if isinstance(tool_facts, dict) else {}
         props = class_properties.get(class_name, []) if isinstance(class_properties, dict) else []
         return props if isinstance(props, list) else []
+
+
+    def _enrich_with_index_if_needed(self, data: Any, tool_facts: dict[str, Any]) -> Any:
+        """Load missing symbol facts from code_index.json when conversation metadata has no tool results.
+
+        This makes JSON generation robust for old dialogs, refreshed pages, or cases where
+        tool results were not saved in conversation metadata. The LLM may output only
+        exact_method_name, and this method fills the missing facts directly from the index.
+        """
+        if not isinstance(data, dict):
+            return data
+        if not self.index_path:
+            return data
+
+        symbols = tool_facts.get("symbols") if isinstance(tool_facts, dict) else None
+        already_has_main_fact = False
+        if isinstance(symbols, list):
+            exact = data.get("exact_method_name")
+            qualified = data.get("qualified_name")
+            for symbol in symbols:
+                if not isinstance(symbol, dict):
+                    continue
+                if qualified and qualified in {symbol.get("qualified_name"), symbol.get("symbol_id")}:
+                    already_has_main_fact = True
+                    break
+                if exact and exact == symbol.get("name") and symbol.get("file_path"):
+                    already_has_main_fact = True
+                    break
+        if already_has_main_fact:
+            return data
+
+        try:
+            index = CodeIndex(self.index_path)
+        except Exception:
+            return data
+
+        exact_name = data.get("exact_method_name")
+        qualified_name = data.get("qualified_name")
+        main_symbol = None
+
+        for symbol in index.symbols:
+            if symbol.get("kind") not in {"function", "method"}:
+                continue
+            if qualified_name and qualified_name in {symbol.get("qualified_name"), symbol.get("symbol_id")}:
+                main_symbol = symbol
+                break
+            if exact_name and exact_name == symbol.get("name"):
+                main_symbol = symbol
+                break
+
+        if not main_symbol and exact_name:
+            results = index.search_symbols(str(exact_name), limit=5)
+            for result in results:
+                candidate = index.by_id.get(result.get("symbol_id"))
+                if candidate and candidate.get("kind") in {"function", "method"}:
+                    main_symbol = candidate
+                    break
+
+        if not main_symbol:
+            return data
+
+        collected: dict[str, dict[str, Any]] = {}
+        main_details = index.get_symbol_details(main_symbol["symbol_id"], include_body=True)
+        collected[main_symbol["symbol_id"]] = main_details
+
+        # Add directly called project symbols from the main body.
+        calls = self._extract_calls([self._compact_symbol(main_details, include_body=True)])
+        called_names = calls.get(main_symbol["symbol_id"], [])
+        for call_name in called_names:
+            for symbol in index.symbols:
+                if symbol.get("name") == call_name and symbol.get("symbol_id") not in collected:
+                    collected[symbol["symbol_id"]] = index.get_symbol_details(symbol["symbol_id"], include_body=True)
+                    break
+
+        # Add classes from parameters and obvious User class for user parameter.
+        arg_names = set(main_symbol.get("arguments") or [])
+        for symbol in index.symbols:
+            if symbol.get("kind") != "class":
+                continue
+            class_name = str(symbol.get("name") or "")
+            if class_name.lower() in {arg.lower() for arg in arg_names} or ("user" in arg_names and class_name == "User"):
+                collected[symbol["symbol_id"]] = index.get_symbol_details(symbol["symbol_id"], include_body=True)
+
+        generated_facts = self._build_tool_facts([
+            {"tool_name": "get_symbol_details", "result": symbol}
+            for symbol in collected.values()
+        ])
+
+        existing_symbols = tool_facts.setdefault("symbols", [])
+        existing_ids = {s.get("symbol_id") for s in existing_symbols if isinstance(s, dict)}
+        for symbol in generated_facts.get("symbols", []):
+            if symbol.get("symbol_id") not in existing_ids:
+                existing_symbols.append(symbol)
+                existing_ids.add(symbol.get("symbol_id"))
+
+        existing_props = tool_facts.setdefault("class_properties", {})
+        for class_name, props in generated_facts.get("class_properties", {}).items():
+            existing_props.setdefault(class_name, props)
+
+        return data
 
     def _parse_json(self, raw: str) -> Any:
         text = raw.strip()

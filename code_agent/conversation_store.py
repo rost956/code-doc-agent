@@ -21,6 +21,7 @@ class ConversationStore:
             "created_at": now,
             "updated_at": now,
             "messages": [],
+            "repository": None,
         }
         self.save(conversation)
         return conversation
@@ -39,6 +40,7 @@ class ConversationStore:
                     "created_at": data.get("created_at"),
                     "updated_at": data.get("updated_at"),
                     "message_count": len(data.get("messages", [])),
+                    "repository": data.get("repository"),
                 }
             )
         return items
@@ -86,6 +88,18 @@ class ConversationStore:
 
         self.save(conversation)
         return message
+
+
+    def set_repository(self, conversation_id: str, repository: dict[str, Any] | None) -> dict[str, Any]:
+        conversation = self.get(conversation_id)
+        conversation["repository"] = repository
+        self.save(conversation)
+        return conversation
+
+    def get_repository(self, conversation_id: str) -> dict[str, Any] | None:
+        conversation = self.get(conversation_id)
+        repository = conversation.get("repository")
+        return repository if isinstance(repository, dict) else None
 
     def collect_tool_results(self, conversation_id: str) -> list[dict[str, Any]]:
         """Return tool results saved in assistant message metadata."""

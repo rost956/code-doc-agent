@@ -253,3 +253,76 @@ button:disabled {
   background: #7f1d1d;
   border-color: #ef4444;
 }
+
+.repo-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #374151;
+  border-radius: 14px;
+  background: #172033;
+}
+
+.repo-box input {
+  width: 100%;
+  border: 1px solid #374151;
+  border-radius: 10px;
+  background: #111827;
+  color: #f9fafb;
+  padding: 9px 10px;
+  outline: none;
+}
+
+.repo-box input:focus {
+  border-color: #60a5fa;
+}
+
+.repo-box small {
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.repo-status {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #111827;
+  color: #9ca3af;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.repo-status.connected {
+  color: #bbf7d0;
+  background: #064e3b;
+}
+
+.repo-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.file-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #d1d5db;
+  font-size: 12px;
+}
+
+.file-label input[type="file"] {
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  color: #d1d5db;
+}
+
+.upload-box button.primary {
+  margin-top: 2px;
+}
+
+.sidebar {
+  overflow-y: auto;
+}

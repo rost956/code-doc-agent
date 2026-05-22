@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Generator, Iterable
 
 from code_agent.config import load_text_file
+from code_agent.evidence import EvidenceBundle, EvidenceCollector
 from code_agent.index_store import CodeIndex
 from code_agent.llm_client import OpenAICompatibleClient
 from code_agent.logger import JsonlLogger
@@ -28,6 +29,7 @@ class CodeResearchAgent:
         log_path: str = "logs/agent_steps.jsonl",
         max_steps: int = 8,
         system_prompt_path: str = "prompts/system_prompt.txt",
+        force_initial_search: bool = False,
     ):
         self.index = CodeIndex(index_path)
         self.llm_client = llm_client
@@ -36,6 +38,7 @@ class CodeResearchAgent:
         self.max_steps = max_steps
         self.system_prompt_path = system_prompt_path
         self.system_prompt = self._load_system_prompt(system_prompt_path)
+        self.force_initial_search = force_initial_search
 
     def answer(self, question: str) -> str:
         """CLI-compatible method for one question.
@@ -87,6 +90,15 @@ class CodeResearchAgent:
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
+            {
+                "role": "system",
+                "content": (
+                    f"Текущий индекс проекта: {self.index.index_path}. "
+                    f"Количество найденных символов: {len(self.index.symbols)}. "
+                    "Если вопрос требует анализа кода, сначала используй search_symbols, "
+                    "а затем get_symbol_details для подходящих символов."
+                ),
+            },
             *self._normalize_chat_messages(chat_messages),
         ]
 
@@ -95,6 +107,7 @@ class CodeResearchAgent:
         # therefore the tool-call limit is reset automatically.
         seen_tool_requests: set[str] = set()
         empty_search_count = 0
+        evidence_collector = EvidenceCollector()
 
         self.logger.write(
             "agent_turn_start",
@@ -102,12 +115,32 @@ class CodeResearchAgent:
                 "turn_id": turn_id,
                 "max_steps": self.max_steps,
                 "history_messages": len(messages),
+                "force_initial_search": self.force_initial_search,
             },
         )
 
         for step in range(1, self.max_steps + 1):
             try:
-                response = self.llm_client.chat(messages=messages, tools=TOOL_SCHEMAS)
+                tool_choice: Any = "auto"
+                if step == 1 and self.force_initial_search:
+                    tool_choice = {"type": "function", "function": {"name": "search_symbols"}}
+
+                try:
+                    response = self.llm_client.chat(
+                        messages=messages,
+                        tools=TOOL_SCHEMAS,
+                        tool_choice=tool_choice,
+                    )
+                except Exception:
+                    if tool_choice == "auto":
+                        raise
+                    # Some OpenAI-compatible providers do not support forcing
+                    # a specific function. Fall back to generic required tools.
+                    response = self.llm_client.chat(
+                        messages=messages,
+                        tools=TOOL_SCHEMAS,
+                        tool_choice="required",
+                    )
             except Exception as exc:
                 yield {"type": "error", "message": f"Ошибка LLM-запроса: {exc}"}
                 return
@@ -126,6 +159,30 @@ class CodeResearchAgent:
 
             if not message.tool_calls:
                 final_text = message.content or "Модель завершила работу без текстового ответа."
+                self._auto_enrich_evidence(evidence_collector, chat_messages, turn_id)
+                evidence = evidence_collector.bundle()
+                self.logger.write(
+                    "evidence_bundle",
+                    {
+                        "turn_id": turn_id,
+                        "step": step,
+                        "evidence": evidence.to_log_dict(),
+                    },
+                )
+
+                if self.force_initial_search and evidence.raw_tool_count == 0:
+                    final_text = (
+                        "Не удалось сформировать ответ по коду: модель не вызвала инструменты поиска, "
+                        "поэтому данных из индекса проекта нет. Повтори запрос или проверь подключение проекта."
+                    )
+                elif evidence.has_facts():
+                    grounded = self._ground_final_answer(
+                        draft_answer=final_text,
+                        evidence=evidence,
+                        chat_messages=chat_messages,
+                    )
+                    if grounded:
+                        final_text = grounded
                 yield from self._stream_final(final_text)
                 return
 
@@ -164,6 +221,8 @@ class CodeResearchAgent:
                     empty_search_count += 1
                 else:
                     empty_search_count = 0
+
+                evidence_collector.add_tool_result(tool_name, result)
 
                 self.logger.write(
                     "tool_call",
@@ -220,7 +279,146 @@ class CodeResearchAgent:
             return
 
         final_text = final_response.choices[0].message.content
-        yield from self._stream_final(final_text or "Достигнут лимит итераций, но модель не вернула итоговый текст.")
+        final_text = final_text or "Достигнут лимит итераций, но модель не вернула итоговый текст."
+        self._auto_enrich_evidence(evidence_collector, chat_messages, turn_id)
+        evidence = evidence_collector.bundle()
+        self.logger.write(
+            "evidence_bundle",
+            {
+                "turn_id": turn_id,
+                "step": "max_steps_final",
+                "evidence": evidence.to_log_dict(),
+            },
+        )
+        if evidence.has_facts():
+            grounded = self._ground_final_answer(
+                draft_answer=final_text,
+                evidence=evidence,
+                chat_messages=chat_messages,
+            )
+            if grounded:
+                final_text = grounded
+        yield from self._stream_final(final_text)
+
+
+
+    def _auto_enrich_evidence(
+        self,
+        evidence_collector: EvidenceCollector,
+        chat_messages: list[dict[str, str]],
+        turn_id: str,
+    ) -> None:
+        """Add text-search evidence for questions where symbols are not enough.
+
+        This is a safety net against unsupported claims about endpoints,
+        configuration files and access settings.
+        """
+        last_user_message = ""
+        for message in reversed(chat_messages):
+            if message.get("role") == "user":
+                last_user_message = message.get("content", "")
+                break
+
+        text = last_user_message.lower()
+        if not text:
+            return
+
+        queries: list[str] = []
+        if any(marker in text for marker in ("эндпоинт", "endpoint", "маршрут", "router", "api", "fastapi")):
+            queries.append("APIRouter Depends require_access require_execute_access")
+        if any(marker in text for marker in ("доступ", "прав", "авторизац", "аутентификац", "access", "auth")):
+            queries.append("require_access require_execute_access _check_access HTTPBasicCredentials HTTPException")
+        if any(marker in text for marker in ("конфиг", "config", "конфигурац", "файл", "yaml", "json", "env")):
+            queries.append("access ACCESS_MODULE_PASSWORD ACCESS_ADMIN_PASSWORD ACCESS_EVAL_PASSWORD platform.json")
+
+        # Always include a compact search based on the user's own wording.
+        if len(last_user_message) <= 240:
+            queries.append(last_user_message)
+
+        unique_queries: list[str] = []
+        for query in queries:
+            if query not in unique_queries:
+                unique_queries.append(query)
+
+        for query in unique_queries[:4]:
+            try:
+                result = self.index.search_project_text(query=query, limit=8, context_lines=2)
+            except Exception as exc:
+                self.logger.write(
+                    "auto_evidence_search_failed",
+                    {"turn_id": turn_id, "query": query, "error": str(exc)},
+                )
+                continue
+
+            if not result:
+                continue
+
+            evidence_collector.add_tool_result("search_project_text", result)
+            self.logger.write(
+                "auto_evidence_search",
+                {"turn_id": turn_id, "query": query, "result": result},
+            )
+
+    def _ground_final_answer(
+        self,
+        draft_answer: str,
+        evidence: EvidenceBundle,
+        chat_messages: list[dict[str, str]],
+    ) -> str | None:
+        """Rewrite final answer using only facts confirmed by tool results."""
+        if not draft_answer.strip() or not evidence.has_facts():
+            return None
+
+        last_user_message = ""
+        for message in reversed(chat_messages):
+            if message.get("role") == "user":
+                last_user_message = message.get("content", "")
+                break
+
+        grounding_messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты редактор итогового ответа агента анализа кода. "
+                    "Твоя задача — переписать черновой ответ строго по evidence, полученному из инструментов. "
+                    "Не добавляй факты, которых нет в evidence. "
+                    "Если в черновике есть неподтверждённые утверждения, удали их или замени на фразу, что данные не подтверждены. "
+                    "Сохрани структуру, которую просил пользователь. Отвечай по-русски."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Исходный вопрос пользователя:\n"
+                    f"{last_user_message}\n\n"
+                    "Evidence из инструментов:\n"
+                    f"{evidence.to_prompt_text()}\n\n"
+                    "Черновой ответ LLM:\n"
+                    f"{draft_answer}\n\n"
+                    "Перепиши ответ так, чтобы он опирался только на evidence. "
+                    "Не приводи фрагменты кода. Не повторяй одну и ту же информацию в разных разделах."
+                ),
+            },
+        ]
+
+        try:
+            response = self.llm_client.chat(messages=grounding_messages, tools=None)
+            grounded = response.choices[0].message.content
+        except Exception as exc:
+            self.logger.write(
+                "grounding_failed",
+                {"error": str(exc)},
+            )
+            return None
+
+        self.logger.write(
+            "grounded_final_answer",
+            {
+                "draft_answer": draft_answer,
+                "grounded_answer": grounded,
+            },
+        )
+        return grounded
 
     def _load_system_prompt(self, system_prompt_path: str) -> str:
         if not system_prompt_path:

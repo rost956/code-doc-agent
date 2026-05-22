@@ -31,10 +31,25 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
+class GitHubConfig:
+    repositories_dir: str = "data/repositories"
+    indexes_dir: str = "data/indexes"
+    token: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class UploadConfig:
+    uploads_dir: str = "data/uploads"
+    indexes_dir: str = "data/indexes"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     llm: LLMConfig
     agent: AgentConfig
     web: WebConfig
+    github: GitHubConfig
+    upload: UploadConfig
 
 
 def load_config(env_path: str | Path = ".env") -> AppConfig:
@@ -78,6 +93,15 @@ def load_config(env_path: str | Path = ".env") -> AppConfig:
         ),
         web=WebConfig(
             conversation_dir=os.getenv("WEB_CONVERSATION_DIR", "data/conversations"),
+        ),
+        github=GitHubConfig(
+            repositories_dir=os.getenv("GITHUB_REPOSITORIES_DIR", "data/repositories"),
+            indexes_dir=os.getenv("GITHUB_INDEXES_DIR", "data/indexes"),
+            token=os.getenv("GITHUB_TOKEN", "").strip() or None,
+        ),
+        upload=UploadConfig(
+            uploads_dir=os.getenv("UPLOAD_PROJECTS_DIR", "data/uploads"),
+            indexes_dir=os.getenv("UPLOAD_INDEXES_DIR", os.getenv("GITHUB_INDEXES_DIR", "data/indexes")),
         ),
     )
 

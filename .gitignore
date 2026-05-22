@@ -11,6 +11,9 @@ env/
 # Logs and generated data
 logs/
 data/conversations/
+data/repositories/
+data/uploads/
+data/indexes/
 code_index.json
 
 # Secrets

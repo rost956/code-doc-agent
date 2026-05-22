@@ -16,6 +16,37 @@
         </div>
       </div>
       <button id="newChatBtn" class="primary full">Новый диалог</button>
+
+      <section class="repo-box">
+        <div class="side-title">GitHub-репозиторий</div>
+        <div id="repoStatus" class="repo-status">Репозиторий не подключён</div>
+        <input id="repoUrlInput" type="text" placeholder="https://github.com/owner/repo" />
+        <input id="repoBranchInput" type="text" placeholder="branch, необязательно" />
+        <input id="repoTokenInput" type="password" placeholder="GitHub token для private, необязательно" />
+        <div class="repo-actions">
+          <button id="connectRepoBtn" type="button" class="primary full">Подключить</button>
+          <button id="disconnectRepoBtn" type="button" class="full">Отключить</button>
+        </div>
+        <small>Для публичного репозитория токен обычно не нужен. Для private нужен PAT с доступом к repo.</small>
+      </section>
+
+
+      <section class="repo-box upload-box">
+        <div class="side-title">Локальный проект</div>
+        <input id="projectNameInput" type="text" placeholder="Название проекта, необязательно" />
+        <label class="file-label">
+          <span>ZIP-архив проекта</span>
+          <input id="projectArchiveInput" type="file" accept=".zip,application/zip" />
+        </label>
+        <button id="uploadArchiveBtn" type="button" class="primary full">Загрузить ZIP</button>
+        <label class="file-label">
+          <span>Папка проекта</span>
+          <input id="projectFolderInput" type="file" webkitdirectory directory multiple />
+        </label>
+        <button id="uploadFolderBtn" type="button" class="primary full">Загрузить папку</button>
+        <small>Загруженные проекты сохраняются локально в data/uploads/ и не попадают в Git.</small>
+      </section>
+
       <div class="side-title">История</div>
       <div id="conversationList" class="conversation-list"></div>
     </aside>
